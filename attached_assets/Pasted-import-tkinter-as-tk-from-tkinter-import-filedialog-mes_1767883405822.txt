@@ -1,0 +1,669 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox, scrolledtext, ttk
+import math
+import os
+
+def parse_oma_file(file_path):
+    data = {}  # Global records
+    traces = []  # List of trace-specific dicts
+    current_trace = None
+    fcs_block = {}
+    in_fcs = False
+    with open(file_path, 'r', encoding='ascii', errors='ignore') as f:
+        for line in f:
+            line = line.strip()
+            if not line or '=' not in line:
+                continue
+            if line == '_FCS=BEGIN':
+                in_fcs = True
+                continue
+            if line == '_FCS=END':
+                in_fcs = False
+                continue
+            if in_fcs:
+                key, value_str = line.split('=', 1)
+                values = value_str.split(';')
+                converted = []
+                for v in values:
+                    v = v.strip()
+                    try:
+                        converted.append(float(v))
+                    except ValueError:
+                        converted.append(v)
+                fcs_block[key] = converted
+                continue
+            key, value_str = line.split('=', 1)
+            values = value_str.split(';')
+            converted = []
+            for v in values:
+                v = v.strip()
+                try:
+                    converted.append(float(v))
+                except ValueError:
+                    converted.append(v)
+            if key == 'TRCFMT':
+                if current_trace:
+                    traces.append(current_trace)
+                current_trace = {'TRCFMT': converted}
+            elif current_trace and key in ['R', 'A', 'Z', 'ZA', 'ZFMT']:
+                if key in current_trace:
+                    current_trace[key].extend(converted)
+                else:
+                    current_trace[key] = converted
+            else:
+                if key in data:
+                    data[key].extend(converted)
+                else:
+                    data[key] = converted
+        if current_trace:
+            traces.append(current_trace)
+    data['traces'] = traces
+    data['_FCS'] = fcs_block
+    return data
+
+def extract_trace_data(trace, data, override_fcrv=None, override_ztilt=None, override_panto=None, override_cdx=None, override_cdy=None):
+    trcfmt = trace.get('TRCFMT', [1, 400, 'E', 'R', 'F'])
+    if len(trcfmt) < 5:
+        raise ValueError("Invalid TRCFMT record")
+    format_id = int(trcfmt[0])
+    num_points = int(trcfmt[1])
+    angle_mode = trcfmt[2]
+    side = trcfmt[3]
+
+    if format_id != 1:
+        raise ValueError("Only ASCII format (TRCFMT formatID=1) supported.")
+
+    radii = trace.get('R', [])
+    if len(radii) != num_points:
+        raise ValueError(f"Expected {num_points} radii, got {len(radii)}")
+
+    if angle_mode == 'E':
+        angles = [i * (360.0 / num_points) for i in range(num_points)]
+    else:
+        angles_h = trace.get('A', [])
+        if len(angles_h) != num_points:
+            raise ValueError(f"Expected {num_points} angles, got {len(angles_h)}")
+        angles = [a / 100.0 for a in angles_h]
+
+    zfmt = trace.get('ZFMT', None)
+    sags = trace.get('Z', []) if zfmt else []
+
+    tnorm = int(data.get('TNORM', [0])[0])
+
+    fcrv = data.get('FCRV', [None, None])
+    ztilt = data.get('ZTILT', [0.0, 0.0])
+    panto = data.get('PANTO', [0.0, 0.0])
+    cdx = data.get('_CDX', [0.0, 0.0])
+    cdy = data.get('_CDY', [0.0, 0.0])
+
+    idx = 0 if side == 'R' else 1
+    fcrv_val = override_fcrv if override_fcrv is not None else (fcrv[idx] if len(fcrv) > idx and fcrv[idx] is not None else None)
+    ztilt_val = override_ztilt if override_ztilt is not None else (ztilt[idx] / 10.0 if len(ztilt) > idx else 0.0)
+    panto_val = override_panto if override_panto is not None else (panto[idx] if len(panto) > idx else 0.0)
+    cdx_val = override_cdx if override_cdx is not None else cdx[idx]
+    cdy_val = override_cdy if override_cdy is not None else cdy[idx]
+
+    return radii, angles, sags, side, tnorm, fcrv_val, ztilt_val, panto_val, cdx_val, cdy_val
+
+def apply_rotation(points, axis, angle_deg):
+    if angle_deg == 0:
+        return points
+    rad = math.radians(angle_deg)
+    c = math.cos(rad)
+    s = math.sin(rad)
+    new_points = []
+    for x, y, z in points:
+        if axis == 'x':
+            ny = y * c - z * s
+            nz = y * s + z * c
+            new_points.append((x, ny, nz))
+        elif axis == 'y':
+            nx = x * c + z * s
+            nz = -x * s + z * c
+            new_points.append((nx, y, nz))
+    return new_points
+
+def generate_lens_front(radii, angles, sags, side, tnorm, fcrv, aspheric_k):
+    vertices_front = []
+    for i in range(len(radii)):
+        r_mm = radii[i] / 100.0
+        theta_rad = math.radians(angles[i])
+        x = r_mm * math.cos(theta_rad)
+        y = r_mm * math.sin(theta_rad)
+        z = sags[i] / 100.0 if i < len(sags) else 0.0
+        vertices_front.append((x, y, z))
+
+    if side == 'L':
+        vertices_front = [(-x, y, z) for x, y, z in vertices_front]
+
+    if tnorm == 3 and fcrv is not None and fcrv != 0 and not sags:
+        n = 1.53
+        R = (n - 1) * 1000 / fcrv
+        new_front = []
+        for x, y, z in vertices_front:
+            rho = math.sqrt(x**2 + y**2)
+            if rho >= R:
+                sag = 0.0
+            else:
+                sag = R - math.sqrt(R**2 - rho**2)
+            new_front.append((x, y, z + sag))
+        vertices_front = new_front
+
+    if aspheric_k != 0.0 and fcrv is not None and fcrv != 0:
+        n = 1.53
+        c = fcrv / ((n - 1) * 1000)
+        new_front = []
+        for x, y, z in vertices_front:
+            rho2 = x**2 + y**2
+            denom = 1 + math.sqrt(1 - (1 + aspheric_k) * c**2 * rho2)
+            if denom == 0:
+                sag = 0
+            else:
+                sag = (c * rho2) / denom
+            new_front.append((x, y, sag))
+        vertices_front = new_front
+
+    return vertices_front
+
+def generate_beveled_edge(front_points, back_points, thicknesses, min_thick, max_thick, bevel_type, bevel_subtype):
+    num = len(front_points)
+    new_vertices = []
+    new_faces = []
+    start_idx = 2 * num
+
+    def get_level(thick):
+        norm = (thick - min_thick) / (max_thick - min_thick + 1e-6)
+        return int(norm * 19)
+
+    edge_normals = []
+    for i in range(num):
+        fx, fy, _ = front_points[i]
+        bx, by, _ = back_points[i]
+        ex = (fx + bx) / 2
+        ey = (fy + by) / 2
+        length = math.sqrt(ex**2 + ey**2)
+        if length > 0:
+            nx = ex / length
+            ny = ey / length
+        else:
+            nx = ny = 0
+        edge_normals.append((nx, ny))
+
+    if bevel_type == "Standard Bevel":
+        positions = {
+            'normal front': 0.0,
+            '1/3 front': 0.333,
+            '1/2': 0.5,
+            'on back': 1.0
+        }
+        ratio = positions.get(bevel_subtype, 0.5)
+        apex_ring = []
+        for i in range(num):
+            fx, fy, fz = front_points[i]
+            bx, by, bz = back_points[i]
+            ax = fx + ratio * (bx - fx)
+            ay = fy + ratio * (by - fy)
+            az = fz + ratio * (bz - fz)
+            apex_ring.append((ax, ay, az))
+        new_vertices.extend(apex_ring)
+        apex_offset = start_idx
+
+        for i in range(num):
+            j = (i + 1) % num
+            level = get_level((thicknesses[i] + thicknesses[j]) / 2)
+            new_faces.append(f"usemtl thick{level}\nf {i+1} {j+1} {apex_offset + j + 1} {apex_offset + i + 1}")
+            new_faces.append(f"usemtl thick{level}\nf {num + i + 1} {num + j + 1} {apex_offset + j + 1} {apex_offset + i + 1}")
+
+    elif bevel_type == "Rimless Flat":
+        chamfer_size = 0.5
+        front_chamfer = []
+        back_chamfer = []
+        for i in range(num):
+            fx, fy, fz = front_points[i]
+            bx, by, bz = back_points[i]
+            nx, ny = edge_normals[i]
+            offset = chamfer_size / math.sin(math.radians(45))
+            front_chamfer.append((fx - offset * nx, fy - offset * ny, fz))
+            back_chamfer.append((bx - offset * nx, by - offset * ny, bz))
+        new_vertices.extend(front_chamfer)
+        new_vertices.extend(back_chamfer)
+        fc_offset = start_idx
+        bc_offset = start_idx + num
+
+        for i in range(num):
+            j = (i + 1) % num
+            level = get_level((thicknesses[i] + thicknesses[j]) / 2)
+            new_faces.append(f"usemtl thick{level}\nf {i+1} {j+1} {fc_offset + j + 1} {fc_offset + i + 1}")
+            new_faces.append(f"usemtl thick{level}\nf {fc_offset + i + 1} {fc_offset + j + 1} {bc_offset + j + 1} {bc_offset + i + 1}")
+            new_faces.append(f"usemtl thick{level}\nf {num + i + 1} {num + j + 1} {bc_offset + j + 1} {bc_offset + i + 1}")
+
+    elif bevel_type == "Nylon Groove":
+        groove_width = 0.52
+        groove_depth = 1.85
+        pos_ratio = 0.4
+        outer_left = []
+        outer_right = []
+        inner_ring = []
+        for i in range(num):
+            fx, fy, fz = front_points[i]
+            bx, by, bz = back_points[i]
+            nx, ny = edge_normals[i]
+            mid_x = fx + pos_ratio * (bx - fx)
+            mid_y = fy + pos_ratio * (by - fy)
+            mid_z = fz + pos_ratio * (bz - fz)
+            half_width = groove_width / 2
+            outer_left.append((mid_x + half_width * nx, mid_y + half_width * ny, mid_z))
+            outer_right.append((mid_x - half_width * nx, mid_y - half_width * ny, mid_z))
+            inner_ring.append((mid_x - groove_depth * nx, mid_y - groove_depth * ny, mid_z))
+        new_vertices.extend(outer_left)
+        new_vertices.extend(outer_right)
+        new_vertices.extend(inner_ring)
+        ol_offset = start_idx
+        or_offset = start_idx + num
+        inner_offset = start_idx + 2 * num
+
+        for i in range(num):
+            j = (i + 1) % num
+            level = get_level((thicknesses[i] + thicknesses[j]) / 2)
+            new_faces.append(f"usemtl thick{level}\nf {ol_offset + i + 1} {ol_offset + j + 1} {inner_offset + j + 1} {inner_offset + i + 1}")
+            new_faces.append(f"usemtl thick{level}\nf {or_offset + i + 1} {or_offset + j + 1} {inner_offset + j + 1} {inner_offset + i + 1}")
+
+    return new_vertices, new_faces
+
+def add_drilling_holes(front_points, back_points, num_points, hole_positions, hole_diameter=1.6):
+    new_vertices = []
+    new_faces = []
+    cylinder_sides = 12
+    hole_radius = hole_diameter / 2.0
+    current_vertex_index = 0
+
+    for angle_deg, dist_from_edge in hole_positions:
+        best_i = min(range(num_points), key=lambda i: min(abs(angles[i] - angle_deg), 360 - abs(angles[i] - angle_deg)))
+
+        fx, fy, fz = front_points[best_i]
+        bx, by, bz = back_points[best_i]
+        mid_x = (fx + bx) / 2
+        mid_y = (fy + by) / 2
+        mid_z = (fz + bz) / 2
+
+        nx = bx - fx
+        ny = by - fy
+        nz = bz - fz
+        length = math.sqrt(nx**2 + ny**2 + nz**2)
+        if length == 0:
+            current_vertex_index += 2 * cylinder_sides
+            continue
+        nx /= length
+        ny /= length
+        nz /= length
+
+        hole_center_x = mid_x - dist_from_edge * nx
+        hole_center_y = mid_y - dist_from_edge * ny
+        hole_center_z = mid_z
+
+        front_ring_start = current_vertex_index
+        back_ring_start = current_vertex_index + cylinder_sides
+
+        for k in range(cylinder_sides):
+            phi = 2 * math.pi * k / cylinder_sides
+            if abs(nz) > 0.9:
+                px = hole_radius * math.cos(phi)
+                py = hole_radius * math.sin(phi)
+            else:
+                tx = -ny
+                ty = nx
+                tlen = math.sqrt(tx**2 + ty**2)
+                if tlen > 0:
+                    tx /= tlen
+                    ty /= tlen
+                px = hole_radius * (math.cos(phi) * tx - math.sin(phi) * ny)
+                py = hole_radius * (math.cos(phi) * ty + math.sin(phi) * nx)
+
+            new_vertices.append((hole_center_x + px, hole_center_y + py, hole_center_z + hole_radius * 0.1))
+            new_vertices.append((hole_center_x + px, hole_center_y + py, hole_center_z - hole_radius * 0.1))
+
+        for k in range(cylinder_sides):
+            kk = (k + 1) % cylinder_sides
+            new_faces.append(
+                f"f {front_ring_start + k + 1} {front_ring_start + kk + 1} "
+                f"{back_ring_start + kk + 1} {back_ring_start + k + 1}"
+            )
+
+        current_vertex_index += 2 * cylinder_sides
+
+    return new_vertices, new_faces
+
+def generate_obj(output_path, data, selected_side, aspheric_k, override_fcrv_r, override_fcrv_l, override_ztilt_r, override_ztilt_l, override_panto_r, override_panto_l, n, mono_pd_r, mono_pd_l, sphere_r, cyl_r, axis_r, sphere_l, cyl_l, axis_l, bevel_type, bevel_subtype, drill_enabled, hole_str, hole_diam):
+    traces = data['traces']
+    vertex_offset = 0
+    info = {}
+
+    mtl_path = output_path.replace('.obj', '.mtl')
+    with open(mtl_path, 'w') as m:
+        m.write("newmtl lens\nKd 0.8 0.8 0.9\nKa 0.2 0.2 0.3\nKs 0.5 0.5 0.5\nNs 50\nillum 2\n")
+        m.write("newmtl edge\nKd 0.3 0.3 0.3\n")
+        for level in range(20):
+            val = 0.3 + 0.5 * (level / 19.0)
+            m.write(f"newmtl thick{level}\nKd {val:.3f} {val*0.8:.3f} {val*1.2:.3f}\n")
+
+    with open(output_path, 'w') as f:
+        f.write(f"mtllib {os.path.basename(mtl_path)}\n")
+
+        if selected_side in ['R', 'Both']:
+            trace_r = next((t for t in traces if t.get('TRCFMT', [None, None, None, '?'])[3] == 'R'), None)
+            if not trace_r:
+                raise ValueError("No trace found for right side")
+            radii_r, angles_r, sags_r, side_r, tnorm_r, fcrv_r, ztilt_r, panto_r, cdx_r, cdy_r = extract_trace_data(trace_r, data, override_fcrv_r, override_ztilt_r, override_panto_r)
+            front_r = generate_lens_front(radii_r, angles_r, sags_r, side_r, tnorm_r, fcrv_r, aspheric_k)
+
+            F1 = fcrv_r if fcrv_r is not None else 0.0
+            F2_base = sphere_r - F1
+            F2_cyl = sphere_r + cyl_r - F1
+            c_flat = F2_base / (1000 * (n - 1))
+            c_steep = F2_cyl / (1000 * (n - 1))
+            sag_backs_r = []
+            for x, y, z_front in front_r:
+                rho2 = x**2 + y**2
+                if rho2 == 0:
+                    sag_back = 0.0
+                else:
+                    rho = math.sqrt(rho2)
+                    theta_prime = math.atan2(y, x) - math.radians(axis_r)
+                    x_prime = rho * math.cos(theta_prime)
+                    y_prime = rho * math.sin(theta_prime)
+                    cur = c_steep * x_prime**2 + c_flat * y_prime**2
+                    ecc2 = c_steep**2 * x_prime**2 + c_flat**2 * y_prime**2
+                    sag_back = cur / 2 if ecc2 >= 1 else cur / (1 + math.sqrt(1 - ecc2))
+                sag_backs_r.append(sag_back)
+
+            min_diff = min(z_front - sag_back for z_front, sag_back in zip([p[2] for p in front_r], sag_backs_r))
+            ct_r = max(2.0 if sphere_r > 0 else 1.0, -min_diff + 0.1)
+            back_r = [(x, y, sag_back - ct_r) for (x, y, _), sag_back in zip(front_r, sag_backs_r)]
+
+            front_r = apply_rotation(front_r, 'x', panto_r)
+            front_r = apply_rotation(front_r, 'y', ztilt_r)
+            back_r = apply_rotation(back_r, 'x', panto_r)
+            back_r = apply_rotation(back_r, 'y', ztilt_r)
+
+            front_r = [(x - mono_pd_r + cdx_r, y + cdy_r, z) for x, y, z in front_r]
+            back_r = [(x - mono_pd_r + cdx_r, y + cdy_r, z) for x, y, z in back_r]
+
+            thicknesses_r = [f[2] - b[2] for f, b in zip(front_r, back_r)]
+            min_thick_r = min(thicknesses_r)
+            max_thick_r = max(thicknesses_r)
+            info['R'] = (panto_r, fcrv_r, min_thick_r, max_thick_r)
+
+            num_points = len(front_r)
+
+            for v in front_r + back_r:
+                f.write(f"v {v[0]:.4f} {v[1]:.4f} {v[2]:.4f}\n")
+
+            f.write("usemtl lens\n")
+            f.write(f"f {' '.join(str(i+1) for i in range(num_points))}\n")
+            f.write(f"f {' '.join(str(num_points + i + 1) for i in reversed(range(num_points)))}\n")
+
+            bevel_verts, bevel_faces = generate_beveled_edge(front_r, back_r, thicknesses_r, min_thick_r, max_thick_r, bevel_type, bevel_subtype)
+            for v in bevel_verts:
+                f.write(f"v {v[0]:.4f} {v[1]:.4f} {v[2]:.4f}\n")
+            for face in bevel_faces:
+                f.write(face + "\n")
+
+            if drill_enabled and hole_str.strip():
+                try:
+                    hole_list = [tuple(map(float, p.split(','))) for p in hole_str.split(';') if ',' in p]
+                    drill_verts, drill_faces_rel = add_drilling_holes(front_r, back_r, num_points, hole_list, hole_diam)
+                    for v in drill_verts:
+                        f.write(f"v {v[0]:.4f} {v[1]:.4f} {v[2]:.4f}\n")
+                    drill_start = vertex_offset + 2 * num_points + len(bevel_verts)
+                    f.write("usemtl edge\n")
+                    for face_rel in drill_faces_rel:
+                        parts = face_rel.split()[1:]
+                        adjusted = ' '.join(str(int(p) + drill_start - 1) for p in parts)
+                        f.write(f"f {adjusted}\n")
+                except Exception as e:
+                    print(f"Drilling error: {e}")
+
+            vertex_offset += 2 * num_points + len(bevel_verts)
+
+        # Left lens (symmetric to right)
+        if selected_side in ['L', 'Both']:
+            trace_l = next((t for t in traces if t.get('TRCFMT', [None, None, None, '?'])[3] == 'L'), None)
+            if not trace_l:
+                raise ValueError("No trace found for left side")
+            radii_l, angles_l, sags_l, side_l, tnorm_l, fcrv_l, ztilt_l, panto_l, cdx_l, cdy_l = extract_trace_data(trace_l, data, override_fcrv_l, override_ztilt_l, override_panto_l)
+            front_l = generate_lens_front(radii_l, angles_l, sags_l, side_l, tnorm_l, fcrv_l, aspheric_k)
+
+            F1 = fcrv_l if fcrv_l is not None else 0.0
+            F2_base = sphere_l - F1
+            F2_cyl = sphere_l + cyl_l - F1
+            c_flat = F2_base / (1000 * (n - 1))
+            c_steep = F2_cyl / (1000 * (n - 1))
+            sag_backs_l = []
+            for x, y, z_front in front_l:
+                rho2 = x**2 + y**2
+                if rho2 == 0:
+                    sag_back = 0.0
+                else:
+                    rho = math.sqrt(rho2)
+                    theta_prime = math.atan2(y, x) - math.radians(axis_l)
+                    x_prime = rho * math.cos(theta_prime)
+                    y_prime = rho * math.sin(theta_prime)
+                    cur = c_steep * x_prime**2 + c_flat * y_prime**2
+                    ecc2 = c_steep**2 * x_prime**2 + c_flat**2 * y_prime**2
+                    sag_back = cur / 2 if ecc2 >= 1 else cur / (1 + math.sqrt(1 - ecc2))
+                sag_backs_l.append(sag_back)
+
+            min_diff = min(z_front - sag_back for z_front, sag_back in zip([p[2] for p in front_l], sag_backs_l))
+            ct_l = max(2.0 if sphere_l > 0 else 1.0, -min_diff + 0.1)
+            back_l = [(x, y, sag_back - ct_l) for (x, y, _), sag_back in zip(front_l, sag_backs_l)]
+
+            front_l = apply_rotation(front_l, 'x', panto_l)
+            front_l = apply_rotation(front_l, 'y', ztilt_l)
+            back_l = apply_rotation(back_l, 'x', panto_l)
+            back_l = apply_rotation(back_l, 'y', ztilt_l)
+
+            front_l = [(x + mono_pd_l + cdx_l, y + cdy_l, z) for x, y, z in front_l]
+            back_l = [(x + mono_pd_l + cdx_l, y + cdy_l, z) for x, y, z in back_l]
+
+            thicknesses_l = [f[2] - b[2] for f, b in zip(front_l, back_l)]
+            min_thick_l = min(thicknesses_l)
+            max_thick_l = max(thicknesses_l)
+            info['L'] = (panto_l, fcrv_l, min_thick_l, max_thick_l)
+
+            num_points = len(front_l)
+
+            for v in front_l + back_l:
+                f.write(f"v {v[0]:.4f} {v[1]:.4f} {v[2]:.4f}\n")
+
+            f.write("usemtl lens\n")
+            f.write(f"f {' '.join(str(i + vertex_offset + 1) for i in range(num_points))}\n")
+            f.write(f"f {' '.join(str(num_points + i + vertex_offset + 1) for i in reversed(range(num_points)))}\n")
+
+            bevel_verts, bevel_faces = generate_beveled_edge(front_l, back_l, thicknesses_l, min_thick_l, max_thick_l, bevel_type, bevel_subtype)
+            for v in bevel_verts:
+                f.write(f"v {v[0]:.4f} {v[1]:.4f} {v[2]:.4f}\n")
+            bevel_start = vertex_offset + 2 * num_points
+            for face in bevel_faces:
+                parts = face.split()[1:]
+                adjusted = ' '.join(str(int(p) + bevel_start - 1 if p.isdigit() else p) for p in parts)
+                f.write(f"{face.split()[0]} {adjusted}\n")
+
+            if drill_enabled and hole_str.strip():
+                try:
+                    hole_list = [tuple(map(float, p.split(','))) for p in hole_str.split(';') if ',' in p]
+                    drill_verts, drill_faces_rel = add_drilling_holes(front_l, back_l, num_points, hole_list, hole_diam)
+                    for v in drill_verts:
+                        f.write(f"v {v[0]:.4f} {v[1]:.4f} {v[2]:.4f}\n")
+                    drill_start = vertex_offset + 2 * num_points + len(bevel_verts)
+                    f.write("usemtl edge\n")
+                    for face_rel in drill_faces_rel:
+                        parts = face_rel.split()[1:]
+                        adjusted = ' '.join(str(int(p) + drill_start - 1) for p in parts)
+                        f.write(f"f {adjusted}\n")
+                except Exception as e:
+                    print(f"Drilling error: {e}")
+
+            vertex_offset += 2 * num_points + len(bevel_verts)
+
+    return info
+
+class OMAExtractorGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Advanced OMA Lens 3D Generator")
+
+        tk.Label(root, text="Load an ASCII .oma file to extract variables and generate a 3D model.").pack(pady=10)
+
+        self.load_button = tk.Button(root, text="Load .oma File", command=self.load_file)
+        self.load_button.pack(pady=5)
+
+        self.side_combo = ttk.Combobox(root, values=['R', 'L', 'Both'], state='readonly')
+        self.side_combo.set('Both')
+        self.side_combo.pack(pady=5)
+
+        self.text_area = scrolledtext.ScrolledText(root, width=100, height=20)
+        self.text_area.pack(pady=10)
+
+        param_frame = tk.Frame(root)
+        param_frame.pack(pady=10)
+
+        # (previous inputs: aspheric_k, fcrv_r/l, ztilt_r/l, panto_r/l, index, binocular PD, monocular PDs)
+
+        tk.Label(param_frame, text="CDX Right (mm):").grid(row=17, column=0, padx=5, pady=5)
+        self.cdx_r_var = tk.DoubleVar(value=0.0)
+        tk.Entry(param_frame, textvariable=self.cdx_r_var, width=10).grid(row=17, column=1)
+
+        tk.Label(param_frame, text="CDX Left (mm):").grid(row=18, column=0, padx=5, pady=5)
+        self.cdx_l_var = tk.DoubleVar(value=0.0)
+        tk.Entry(param_frame, textvariable=self.cdx_l_var, width=10).grid(row=18, column=1)
+
+        tk.Label(param_frame, text="CDY Right (mm):").grid(row=19, column=0, padx=5, pady=5)
+        self.cdy_r_var = tk.DoubleVar(value=0.0)
+        tk.Entry(param_frame, textvariable=self.cdy_r_var, width=10).grid(row=19, column=1)
+
+        tk.Label(param_frame, text="CDY Left (mm):").grid(row=20, column=0, padx=5, pady=5)
+        self.cdy_l_var = tk.DoubleVar(value=0.0)
+        tk.Entry(param_frame, textvariable=self.cdy_l_var, width=10).grid(row=20, column=1)
+
+        # Bevel
+        tk.Label(param_frame, text="Edge Design:").grid(row=21, column=0, padx=5, pady=5)
+        self.bevel_combo = ttk.Combobox(param_frame, values=['Standard Bevel', 'Rimless Flat', 'Nylon Groove'], state='readonly')
+        self.bevel_combo.set('Standard Bevel')
+        self.bevel_combo.grid(row=21, column=1)
+
+        tk.Label(param_frame, text="Bevel Subtype:").grid(row=22, column=0, padx=5, pady=5)
+        self.subtype_combo = ttk.Combobox(param_frame, values=['normal front', '1/3 front', '1/2', 'on back'], state='readonly')
+        self.subtype_combo.set('normal front')
+        self.subtype_combo.grid(row=22, column=1)
+
+        # Drilling
+        tk.Label(param_frame, text="Drilling Holes (Rimless)").grid(row=23, column=0, columnspan=2, pady=(20,5))
+        self.drill_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(param_frame, variable=self.drill_var).grid(row=24, column=1, sticky='w')
+
+        tk.Label(param_frame, text="Hole Positions (angle,dist mm):").grid(row=25, column=0, sticky='e')
+        self.holes_var = tk.StringVar(value="30,2;150,2")
+        tk.Entry(param_frame, textvariable=self.holes_var, width=20).grid(row=25, column=1)
+
+        tk.Label(param_frame, text="Hole Diameter (mm):").grid(row=26, column=0, sticky='e')
+        self.hole_diam_var = tk.DoubleVar(value=1.6)
+        tk.Entry(param_frame, textvariable=self.hole_diam_var, width=10).grid(row=26, column=1)
+
+        # FCS display
+        self.fcs_text = scrolledtext.ScrolledText(root, width=60, height=6)
+        self.fcs_text.pack(pady=10)
+
+        self.generate_button = tk.Button(root, text="Generate .obj File", command=self.generate_obj, state=tk.DISABLED)
+        self.generate_button.pack(pady=20)
+
+        self.data = None
+
+    def load_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[("OMA Files", "*.oma *.OMA")])
+        if not file_path:
+            return
+        try:
+            self.data = parse_oma_file(file_path)
+            self.display_data()
+            # (prefill all vars as before)
+            cdx = self.data.get('_CDX', [0.0, 0.0])
+            cdy = self.data.get('_CDY', [0.0, 0.0])
+            self.cdx_r_var.set(cdx[0])
+            self.cdx_l_var.set(cdx[1] if len(cdx) > 1 else cdx[0])
+            self.cdy_r_var.set(cdy[0])
+            self.cdy_l_var.set(cdy[1] if len(cdy) > 1 else cdy[0])
+
+            self.fcs_text.delete(1.0, tk.END)
+            fcs = self.data.get('_FCS', {})
+            for k, v in fcs.items():
+                self.fcs_text.insert(tk.END, f"{k} = {'; '.join(map(str, v))}\n")
+
+            self.generate_button.config(state=tk.NORMAL)
+            messagebox.showinfo("Success", "File loaded and parsed successfully!")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+    def display_data(self):
+        self.text_area.delete(1.0, tk.END)
+        self.text_area.insert(tk.END, "Extracted OMA Variables:\n\n")
+        globals_dict = {k: v for k, v in self.data.items() if k not in ['traces', '_FCS']}
+        for key, values in sorted(globals_dict.items()):
+            self.text_area.insert(tk.END, f"{key} = {'; '.join(map(str, values))}\n")
+        self.text_area.insert(tk.END, "\nTraces:\n")
+        for idx, trace in enumerate(self.data['traces']):
+            side = trace.get('TRCFMT', [None, None, None, '?'])[3]
+            self.text_area.insert(tk.END, f"Trace for Side {side}:\n")
+            for key, values in sorted(trace.items()):
+                self.text_area.insert(tk.END, f"  {key} = {'; '.join(map(str, values))}\n")
+            self.text_area.insert(tk.END, "\n")
+
+    def generate_obj(self):
+        if not self.data:
+            return
+        output_path = filedialog.asksaveasfilename(defaultextension=".obj", filetypes=[("OBJ Files", "*.obj")])
+        if not output_path:
+            return
+        try:
+            selected_side = self.side_combo.get()
+            aspheric_k = self.k_var.get()
+            override_fcrv_r = self.fcrv_r_var.get()
+            override_fcrv_l = self.fcrv_l_var.get()
+            override_ztilt_r = self.ztilt_r_var.get()
+            override_ztilt_l = self.ztilt_l_var.get()
+            override_panto_r = self.panto_r_var.get()
+            override_panto_l = self.panto_l_var.get()
+            n = float(self.index_combo.get())
+            mono_pd_r = self.mono_pd_r_var.get()
+            mono_pd_l = self.mono_pd_l_var.get()
+            sphere_r = self.sphere_r_var.get()
+            cyl_r = self.cyl_r_var.get()
+            axis_r = self.axis_r_var.get()
+            sphere_l = self.sphere_l_var.get()
+            cyl_l = self.cyl_l_var.get()
+            axis_l = self.axis_l_var.get()
+            bevel_type = self.bevel_combo.get()
+            bevel_subtype = self.subtype_combo.get()
+            drill_enabled = self.drill_var.get()
+            hole_str = self.holes_var.get()
+            hole_diam = self.hole_diam_var.get()
+
+            info = generate_obj(output_path, self.data, selected_side, aspheric_k, override_fcrv_r, override_fcrv_l,
+                                override_ztilt_r, override_ztilt_l, override_panto_r, override_panto_l, n,
+                                mono_pd_r, mono_pd_l, sphere_r, cyl_r, axis_r, sphere_l, cyl_l, axis_l,
+                                bevel_type, bevel_subtype, drill_enabled, hole_str, hole_diam)
+
+            messagebox.showinfo("Success", f"3D .obj generated:\n{output_path}\nOpen in Blender/MeshLab to view.")
+            self.text_area.insert(tk.END, "\nCalculated Data:\n")
+            if 'R' in info:
+                panto, base, min_thick, max_thick = info['R']
+                self.text_area.insert(tk.END, f"Right Lens: Pantoscopic Angle {panto:.2f}°, Base Curve {base:.2f} D, Min Edge Thickness {min_thick:.2f} mm, Max Edge Thickness {max_thick:.2f} mm\n")
+            if 'L' in info:
+                panto, base, min_thick, max_thick = info['L']
+                self.text_area.insert(tk.END, f"Left Lens: Pantoscopic Angle {panto:.2f}°, Base Curve {base:.2f} D, Min Edge Thickness {min_thick:.2f} mm, Max Edge Thickness {max_thick:.2f} mm\n")
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = OMAExtractorGUI(root)
+    root.mainloop()
