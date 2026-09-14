@@ -34,6 +34,27 @@ export interface CanonicalOmaFile {
   issues: OmaIssue[];
 }
 
+export interface CartesianTracePoint { x: number; y: number; radius: number; angle: number; }
+
+/** Optical display helpers. FCRV is treated as diopters; n=1.530 is configurable. */
+export function radiusFromBaseCurve(baseCurveDiopters: number, refractiveIndex = 1.530) {
+  if (!Number.isFinite(baseCurveDiopters) || baseCurveDiopters <= 0 || refractiveIndex <= 1) return Infinity;
+  return ((refractiveIndex - 1) * 1000) / baseCurveDiopters;
+}
+
+export function sphericalSag(distance: number, radius: number) {
+  const d = Math.abs(distance);
+  if (!Number.isFinite(radius) || radius <= 0 || d === 0) return 0;
+  if (d > radius) return NaN;
+  return radius - Math.sqrt(radius * radius - d * d);
+}
+
+export function fcrvForTrace(file: CanonicalOmaFile, trace: CanonicalTrace, refractiveIndex = 1.530) {
+  const values = file.records.find((record) => record.scope === "global" && record.key === "FCRV")?.values.map(Number) ?? [];
+  const baseCurve = Number(values[trace.side === "L" ? 1 : 0]);
+  return { baseCurve, refractiveIndex, radius: radiusFromBaseCurve(baseCurve, refractiveIndex) };
+}
+
 const TRACE_KEYS = new Set(["TRCFMT", "R", "A", "Z", "ZA", "ZFMT"]);
 
 function parseValues(value: string): OmaValue[] {
@@ -106,6 +127,27 @@ export function normalizedTraceGeometry(trace: CanonicalTrace) {
     ? Array.from({ length: count }, (_, index) => index * 360 / count)
     : trace.angles.map(Number).map((value) => value / 100);
   return { side: trace.side, radii: trace.radii.map(Number).map((value) => value / 100), angles, sags: trace.sags.map(Number).map((value) => value / 100) };
+}
+
+/** OMA display convention used by the application: zero degrees is +X and angles increase counter-clockwise. */
+export function traceToCartesian(trace: CanonicalTrace): CartesianTracePoint[] {
+  const geometry = normalizedTraceGeometry(trace);
+  return geometry.radii.map((radius, index) => {
+    const angle = geometry.angles[index] ?? 0;
+    const radians = angle * Math.PI / 180;
+    return { x: radius * Math.cos(radians), y: radius * Math.sin(radians), radius, angle };
+  });
+}
+
+export function binocularPlacement(file: CanonicalOmaFile) {
+  const hbox = file.records.find((record) => record.scope === "global" && record.key === "HBOX")?.values.map(Number) ?? [];
+  const dbl = Number(file.records.find((record) => record.scope === "global" && record.key === "DBL")?.values[0]);
+  const rightWidth = Number.isFinite(hbox[0]) ? hbox[0] : null;
+  const leftWidth = Number.isFinite(hbox[1]) ? hbox[1] : null;
+  const bridge = Number.isFinite(dbl) ? dbl : 0;
+  const centerDistance = rightWidth !== null && leftWidth !== null ? rightWidth / 2 + bridge + leftWidth / 2 : null;
+  const distance = centerDistance ?? 0;
+  return { rightX: distance / 2, leftX: -distance / 2, centerDistance, rightWidth, leftWidth, dbl: Number.isFinite(dbl) ? dbl : null };
 }
 
 export function validateCanonicalOma(file: Pick<CanonicalOmaFile, "traces">): OmaIssue[] {

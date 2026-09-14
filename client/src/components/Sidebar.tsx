@@ -43,7 +43,7 @@ export function Sidebar() {
 
       <div className="flex-1 flex flex-col min-h-0">
         <div className="px-6 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider flex items-center justify-between">
-          <span>Files Library</span>
+          <span>Shape Job Library</span>
           <span className="bg-primary/10 text-primary px-2 py-0.5 rounded-full">{filteredLenses?.length || 0}</span>
         </div>
         
@@ -97,7 +97,7 @@ export function Sidebar() {
                     <Grid className="w-6 h-6 text-muted-foreground/50" />
                   </div>
                   <p className="text-sm font-medium text-foreground">No files found</p>
-                  <p className="text-xs text-muted-foreground mt-1">Upload an OMA file to get started</p>
+                  <p className="text-xs text-muted-foreground mt-1">Import an OMA shape job to get started</p>
                 </div>
               )}
             </div>

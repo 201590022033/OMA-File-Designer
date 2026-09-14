@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseCanonicalOma, validateCanonicalOma, writeCanonicalOma } from "../shared/oma-engine";
+import { readFileSync } from "node:fs";
+import { parseCanonicalOma, validateCanonicalOma, writeCanonicalOma, traceToCartesian, binocularPlacement, radiusFromBaseCurve, sphericalSag } from "../shared/oma-engine";
+import { edgeApexZ } from "../client/src/lib/oma-parser";
 
 const synthetic = [
   "VERS=3.10",
@@ -58,4 +60,55 @@ test("validation reports mismatched declared point counts", () => {
 test("validation distinguishes a file with no traces as fatal", () => {
   const file = parseCanonicalOma("VERS=3.10\n");
   assert.ok(file.issues.some((issue) => issue.severity === "error" && issue.code === "NO_TRACES"));
+});
+
+test("canonical Cartesian points are the shared solid and wireframe perimeter", () => {
+  const trace = parseCanonicalOma("TRCFMT=1;4;E;R;F\nR=100;100;100;100\n").traces[0];
+  const points = traceToCartesian(trace);
+  const expected = [[1, 0], [0, 1], [-1, 0], [0, -1]];
+  points.forEach(({ x, y }, index) => {
+    assert.ok(Math.abs(x - expected[index][0]) < 1e-12);
+    assert.ok(Math.abs(y - expected[index][1]) < 1e-12);
+  });
+});
+
+test("binocular placement derives optical-center distance from HBOX and DBL", () => {
+  const file = parseCanonicalOma("HBOX=53.88;53.56\nDBL=15.41\nTRCFMT=1;4;E;R;F\nR=2500;2500;2500;2500\nTRCFMT=1;4;E;L;F\nR=2500;2500;2500;2500\n");
+  const placement = binocularPlacement(file);
+  assert.equal(placement.centerDistance, 69.13);
+  assert.equal(placement.leftX, -34.565);
+  assert.equal(placement.rightX, 34.565);
+});
+
+test("spherical sag is finite, centered, symmetric, and monotonic", () => {
+  const radius = radiusFromBaseCurve(3.16);
+  assert.ok(Math.abs(radius - 167.7215189873) < 1e-9);
+  assert.equal(sphericalSag(0, radius), 0);
+  assert.equal(sphericalSag(10, radius), sphericalSag(-10, radius));
+  assert.ok(sphericalSag(20, radius) > sphericalSag(10, radius));
+  assert.ok(Number.isFinite(sphericalSag(20, radius)));
+  assert.ok(Number.isNaN(sphericalSag(radius + 1, radius)));
+});
+
+test("real fixture uses independent right and left FCRV curvature", () => {
+  const file = parseCanonicalOma(readFileSync("tests/fixtures/oma/real-world/23546 - Final_Annelize Botha_1.oma", "utf8"));
+  const right = file.records.find((record) => record.key === "FCRV")!.values.map(Number)[0];
+  const left = file.records.find((record) => record.key === "FCRV")!.values.map(Number)[1];
+  assert.notEqual(radiusFromBaseCurve(right), radiusFromBaseCurve(left));
+});
+
+test("preview edge placement follows local front/back surfaces", () => {
+  for (const ratio of [0, 0.333, 0.5, 1, 0.25, 0.75]) {
+    assert.ok(Math.abs(edgeApexZ(2.1, -1.9, ratio) - (2.1 + ratio * (-4))) < 1e-12);
+  }
+  assert.equal(edgeApexZ(2, -2, 0), 2);
+  assert.equal(edgeApexZ(2, -2, 1), -2);
+});
+
+test("edge preview state is export-neutral for the real fixture", () => {
+  const content = readFileSync("tests/fixtures/oma/real-world/23546 - Final_Annelize Botha_1.oma", "utf8");
+  const exported = writeCanonicalOma(parseCanonicalOma(content));
+  for (const preview of ["front", "one-third-front", "center", "back", "custom", "flat", "groove:2:1:0.75"]) {
+    assert.equal(writeCanonicalOma(parseCanonicalOma(content)), exported, preview);
+  }
 });

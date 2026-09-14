@@ -59,9 +59,9 @@ export function UploadModal({ children }: { children: React.ReactNode }) {
       </DialogTrigger>
       <DialogContent className="sm:max-w-md bg-secondary/95 backdrop-blur-xl border-white/10">
         <DialogHeader>
-          <DialogTitle className="text-xl font-display">Upload Lens File</DialogTitle>
+          <DialogTitle className="text-xl font-display">Import OMA Shape Job</DialogTitle>
           <DialogDescription>
-            Import standard OMA files to visualize and analyze lens geometry.
+            Import a complete OMA frame shape set, including right and left traces.
           </DialogDescription>
         </DialogHeader>
         
@@ -120,12 +120,12 @@ export function UploadModal({ children }: { children: React.ReactNode }) {
 
           {file && (
             <div className="space-y-2">
-              <label className="text-sm font-medium text-muted-foreground">Lens Name</label>
+              <label className="text-sm font-medium text-muted-foreground">Shape Job Name</label>
               <input 
                 className="w-full bg-black/20 border border-white/10 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
                 value={previewName}
                 onChange={(e) => setPreviewName(e.target.value)}
-                placeholder="Enter lens name..."
+                placeholder="Enter shape job name..."
               />
             </div>
           )}
@@ -141,7 +141,7 @@ export function UploadModal({ children }: { children: React.ReactNode }) {
             {createLens.isPending ? (
               <Loader2 className="w-4 h-4 animate-spin mr-2" />
             ) : null}
-            {createLens.isPending ? "Uploading..." : "Import Lens"}
+            {createLens.isPending ? "Importing..." : "Import OMA Job"}
           </Button>
         </div>
       </DialogContent>

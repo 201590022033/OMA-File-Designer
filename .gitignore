@@ -4,5 +4,6 @@ dist
 server/public
 data/*.db
 data/*.db-*
+reports/
 vite.config.ts.*
 *.tar.gz

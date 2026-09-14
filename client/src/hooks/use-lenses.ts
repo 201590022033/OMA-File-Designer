@@ -54,7 +54,7 @@ export function useCreateLens() {
       queryClient.invalidateQueries({ queryKey: [api.lenses.list.path] });
       toast({
         title: "Success",
-        description: "Lens uploaded successfully",
+        description: "OMA shape job imported successfully",
       });
     },
     onError: (error) => {
@@ -87,7 +87,7 @@ export function useDeleteLens() {
       queryClient.invalidateQueries({ queryKey: [api.lenses.list.path] });
       toast({
         title: "Deleted",
-        description: "Lens removed from library",
+        description: "OMA shape job removed from library",
       });
     },
     onError: (error) => {

@@ -29,7 +29,7 @@ export default function Dashboard() {
               animate={{ opacity: 1, y: 0 }}
               className="text-4xl md:text-5xl font-bold font-display tracking-tight text-white mb-4"
             >
-              Precision Lens Visualization
+              Precision OMA Shape Jobs
             </motion.h1>
             <motion.p 
               initial={{ opacity: 0, y: 20 }}
@@ -37,8 +37,8 @@ export default function Dashboard() {
               transition={{ delay: 0.1 }}
               className="text-lg text-muted-foreground mb-8 leading-relaxed"
             >
-              Upload, analyze, and visualize OMA lens files in real-time 3D. 
-              Inspect curvature, thickness, and bevel profiles with engineering-grade precision.
+              Import, inspect, and visualize complete OMA frame shape jobs in real-time 3D.
+              Preserve and review both right and left frame traces.
             </motion.p>
             
             <motion.div 
@@ -50,7 +50,7 @@ export default function Dashboard() {
               <UploadModal>
                 <Button size="lg" className="bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/25 rounded-xl font-semibold px-8">
                   <Plus className="w-5 h-5 mr-2" />
-                  Upload New Lens
+                  Upload OMA Job
                 </Button>
               </UploadModal>
               <Button size="lg" variant="outline" className="border-white/10 hover:bg-white/5 text-white rounded-xl">
@@ -67,15 +67,15 @@ export default function Dashboard() {
         {/* List Section */}
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
           <div>
-            <h2 className="text-2xl font-display font-bold text-white">Library</h2>
-            <p className="text-sm text-muted-foreground">Manage your uploaded lens profiles</p>
+            <h2 className="text-2xl font-display font-bold text-white">Shape Job Library</h2>
+            <p className="text-sm text-muted-foreground">Manage your imported OMA frame shape sets</p>
           </div>
           
           <div className="flex gap-2 w-full md:w-auto">
             <div className="relative flex-1 md:w-64">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <input 
-                placeholder="Search lenses..." 
+                placeholder="Search shape jobs..." 
                 className="w-full bg-secondary/50 border border-white/10 rounded-lg pl-9 pr-4 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
@@ -95,17 +95,17 @@ export default function Dashboard() {
           </div>
         ) : isError ? (
           <div className="text-center py-20 bg-destructive/5 rounded-2xl border border-destructive/20">
-            <p className="text-destructive font-medium">Failed to load lenses. Please try again.</p>
+            <p className="text-destructive font-medium">Failed to load shape jobs. Please try again.</p>
           </div>
         ) : filteredLenses?.length === 0 ? (
           <div className="text-center py-20 bg-secondary/30 rounded-2xl border border-dashed border-white/10">
             <div className="w-16 h-16 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-4 text-muted-foreground">
               <Box className="w-8 h-8" />
             </div>
-            <h3 className="text-lg font-medium text-white mb-1">No lenses found</h3>
-            <p className="text-muted-foreground mb-6">Upload your first OMA file to get started.</p>
+            <h3 className="text-lg font-medium text-white mb-1">No shape jobs found</h3>
+            <p className="text-muted-foreground mb-6">Import your first OMA shape job to get started.</p>
             <UploadModal>
-              <Button className="bg-primary text-primary-foreground">Upload Lens</Button>
+              <Button className="bg-primary text-primary-foreground">Import OMA Job</Button>
             </UploadModal>
           </div>
         ) : (
@@ -146,7 +146,7 @@ export default function Dashboard() {
                   <div className="mt-auto pt-4 border-t border-white/5 flex items-center justify-between">
                     <Link href={`/view/${lens.id}`}>
                       <span className="text-sm font-medium text-white group-hover:underline flex items-center cursor-pointer">
-                        View 3D Model <ArrowRight className="w-4 h-4 ml-1 transition-transform group-hover:translate-x-1" />
+                        View Shape Set <ArrowRight className="w-4 h-4 ml-1 transition-transform group-hover:translate-x-1" />
                       </span>
                     </Link>
                   </div>
